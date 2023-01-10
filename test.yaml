@@ -1,0 +1,27 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "game-director"
+  namespace: default
+  labels:
+    app: "game-director"
+spec:
+  serviceAccount: fleet-allocator
+  hostname: game-director
+  containers:
+    - name: pixo-allocation
+      image: jarmex/open-match-director:latest
+      imagePullPolicy: Always
+      resources:
+        limits:
+          cpu: 50m
+          memory: 200Mi
+        requests:
+          cpu: 50m
+          memory: 100Mi
+      env:
+        - name: FLEET_NAMESPACE
+          value: "default"
+        - name: FLEET_NAME
+          value: "simple-game-server"
