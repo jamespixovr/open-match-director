@@ -30,7 +30,7 @@ const (
 	// The endpoint for the Open Match Backend service.
 	OM_API_HOST = "open-match-backend.open-match.svc.cluster.local:50505"
 	// The Host and Port for the Match Function service endpoint.
-	MMF_API_HOST       = "mmf.default.svc.cluster.local" // Change to reflect the deployed service and port
+	MMF_API_HOST       = "pixo-matchfunction.default.svc.cluster.local" // Change to reflect the deployed service and port
 	MMF_API_PORT int32 = 50502
 )
 

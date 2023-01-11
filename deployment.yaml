@@ -2,10 +2,10 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: "game-director"
+  name: "pixo-director"
   namespace: default
   labels:
-    app: "game-director"
+    app: "pixo-director"
 spec:
   serviceAccount: fleet-allocator
   hostname: game-director
