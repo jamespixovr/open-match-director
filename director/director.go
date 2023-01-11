@@ -10,7 +10,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/anypb"
 	"open-match.dev/open-match/pkg/pb"
 
 	agonesv1 "agones.dev/agones/pkg/apis/agones/v1"
@@ -131,13 +130,8 @@ func createOMFetchMatchesRequest() *pb.FetchMatchesRequest {
 			Type: pb.FunctionConfig_GRPC,
 		},
 		Profile: &pb.MatchProfile{
-			Name: "1v1",
-			Pools: []*pb.Pool{
-				{
-					Name: "everyone",
-				},
-			},
-			Extensions: map[string]*anypb.Any{},
+			Name:  "get-all",
+			Pools: []*pb.Pool{},
 		},
 	}
 }
@@ -210,6 +204,7 @@ func createOMAssignTicketRequest(match *pb.Match, address string, port int32) *p
 }
 
 func fetch(bc pb.BackendServiceClient) ([]*pb.Match, error) {
+	// this needs to be modified to fetch the correct profile
 	stream, err := bc.FetchMatches(context.Background(), createOMFetchMatchesRequest())
 	if err != nil {
 		logger.Errorf("fail to get response stream from backend.FetchMatches call: %w", err)
@@ -282,16 +277,18 @@ func Run() {
 	bc, omCloser := createOMBackendClient()
 	defer omCloser()
 
-	// this needs to be modified to fetch the correct profile
 	for range time.Tick(time.Second * 1) {
 		matches, err := fetch(bc)
 		if err != nil {
 			logger.WithError(err).Info("Failed to fetch matches")
 			continue
 		}
+		// if not matches then continue
+		if len(matches) <= 0 {
+			continue
+		}
 
 		readyReplicas := checkReadyReplicas()
-		logger.WithField("readyReplicas", readyReplicas).Info("number of ready replicas")
 
 		// Log and return an error if there are no ready replicas
 		if readyReplicas < 1 {
