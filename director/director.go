@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,8 +39,6 @@ const (
 // Variables for the logger and Agones Clientset
 var (
 	logger       = runtime.NewLoggerWithSource("main")
-	namespace    = getEnv("FLEET_NAMESPACE", "default") // default
-	fleetname    = getEnv("FLEET_NAME", "pixo-games")   //"pixo-games" // pixo-games
 	agonesClient = getAgonesClient()
 )
 
@@ -109,12 +108,12 @@ func getGameServerInfomer() (*InformerType, error) {
 	return c, nil
 }
 
-func createAgonesGameServerAllocation() *allocationv1.GameServerAllocation {
+func createAgonesGameServerAllocation(org OrgModule) *allocationv1.GameServerAllocation {
 	return &allocationv1.GameServerAllocation{
 		Spec: allocationv1.GameServerAllocationSpec{
 			Required: allocationv1.GameServerSelector{
 				LabelSelector: metav1.LabelSelector{
-					MatchLabels: map[string]string{agonesv1.FleetNameLabel: fleetname},
+					MatchLabels: map[string]string{agonesv1.FleetNameLabel: org.FleetName},
 				},
 			},
 		},
@@ -139,13 +138,31 @@ type GameServerIPPort struct {
 	port    int32
 }
 
+// filter
+func Filter(gameSrvList []agonesv1.GameServer, f func(agonesv1.GameServer) bool) []agonesv1.GameServer {
+	filtered := make([]agonesv1.GameServer, 0)
+	for _, gameServer := range gameSrvList {
+		if f(gameServer) {
+			filtered = append(filtered, gameServer)
+		}
+	}
+	return filtered
+}
+
 // Get IP Address of an allocated game server
-func getAllocatedGameServerInfo() (*GameServerIPPort, error) {
-	listGameServer, err := agonesClient.AgonesV1().GameServers(namespace).List(context.Background(), metav1.ListOptions{})
+func getAllocatedGameServerInfo(org OrgModule) (*GameServerIPPort, error) {
+	listGameServer, err := agonesClient.AgonesV1().GameServers(org.Namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	n := rand.Intn(len(listGameServer.Items))
+	filteredGS := Filter(listGameServer.Items, func(word agonesv1.GameServer) bool {
+		return strings.Contains(word.GetName(), org.FleetName)
+	})
+
+	// listGameServer = Filter(listGameServer.Items, func(gs agonesv1.GameServer) bool {
+	// 	return strings.Contains(gs.GetName(), org.FleetName)
+	// })
+	n := rand.Intn(len(filteredGS)) // filter the array
 	gameserver := listGameServer.Items[n].Status
 
 	c := &GameServerIPPort{
@@ -156,16 +173,17 @@ func getAllocatedGameServerInfo() (*GameServerIPPort, error) {
 }
 
 // Return the number of ready game servers available to this fleet for allocation
-func checkReadyReplicas() int32 {
+func checkReadyReplicas(org OrgModule) (int32, error) {
 	// Get a FleetInterface for this namespace
-	fleetInterface := agonesClient.AgonesV1().Fleets(namespace)
+	fleetInterface := agonesClient.AgonesV1().Fleets(org.Namespace)
 	// Get our fleet
-	fleet, err := fleetInterface.Get(context.Background(), fleetname, metav1.GetOptions{})
+	fleet, err := fleetInterface.Get(context.Background(), org.FleetName, metav1.GetOptions{})
 	if err != nil {
 		logger.WithError(err).Info("Get fleet failed")
+		return 0, err
 	}
 
-	return fleet.Status.ReadyReplicas
+	return fleet.Status.ReadyReplicas, nil
 }
 
 func createOMAssignTicketRequest(match *pb.Match, address string, port int32) *pb.AssignTicketsRequest {
@@ -210,12 +228,12 @@ func fetch(bc pb.BackendServiceClient, p *pb.MatchProfile) ([]*pb.Match, error) 
 }
 
 // Move a replica from ready to allocated and return the GameServerStatus
-func allocate() (*GameServerIPPort, error) {
+func allocate(org OrgModule) (*GameServerIPPort, error) {
 	ctx := context.Background()
 
 	// Find out how many ready replicas the fleet has - we need at least one
-	gsa, err := agonesClient.AllocationV1().GameServerAllocations(namespace).Create(ctx,
-		createAgonesGameServerAllocation(), metav1.CreateOptions{})
+	gsa, err := agonesClient.AllocationV1().GameServerAllocations(org.Namespace).Create(ctx,
+		createAgonesGameServerAllocation(org), metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +274,7 @@ func Run() {
 
 	rand.Seed(time.Now().Unix())
 	// Generate the profiles to fetch matches for.
-	profiles := generateProfiles()
+	profiles := generateGameProfile()
 
 	for range time.Tick(time.Second * 2) {
 		// Fetch matches for each profile and make random assignments for Tickets in
@@ -264,21 +282,24 @@ func Run() {
 		var wg sync.WaitGroup
 		for _, p := range profiles {
 			wg.Add(1)
-			go func(wg *sync.WaitGroup, p *pb.MatchProfile) {
+			go func(wg *sync.WaitGroup, gameprofile *GameProfile) {
 				defer wg.Done()
 
-				matches, err := fetch(bc, p)
+				matches, err := fetch(bc, &gameprofile.profile)
 				if err != nil {
 					logger.WithError(err).Info("Failed to fetch matches")
 					return
 				}
 				// if not matches then continue
 				if len(matches) > 0 {
-					readyReplicas := checkReadyReplicas()
+					readyReplicas, err := checkReadyReplicas(gameprofile.org)
+					if err != nil {
+						return
+					}
 
 					// Log and return an error if there are no ready replicas
 					if readyReplicas < 1 {
-						g, err := getAllocatedGameServerInfo()
+						g, err := getAllocatedGameServerInfo(gameprofile.org)
 						if err != nil {
 							logger.WithError(err).Error("Failed to get game server info")
 							return
@@ -289,7 +310,7 @@ func Run() {
 						}
 					} else {
 						// allocate the server
-						allocatedata, err := allocate()
+						allocatedata, err := allocate(gameprofile.org)
 						if err != nil {
 							logger.WithError(err).Info("Failed to assign servers to matches")
 						}

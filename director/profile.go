@@ -9,17 +9,28 @@ import (
 )
 
 type OrgModule struct {
-	ModuleId int
-	OrgId    int
+	ModuleId  int
+	OrgId     int
+	FleetName string
+	Namespace string
 }
 
-// generateProfiles generates test profiles for the matchmaker101 tutorial.
-func generateProfiles() []*pb.MatchProfile {
-	var profiles []*pb.MatchProfile
+type GameProfile struct {
+	profile pb.MatchProfile
+	org     OrgModule
+}
 
-	// TODO will need a connection to db to grab org/module combinations
-	orgModules := []OrgModule{{OrgId: 5, ModuleId: 4}, {OrgId: 2, ModuleId: 3}}
+// generateGameProfile generates test profiles for the matchmaker101 tutorial.
+func generateGameProfile() []*GameProfile {
+	var gameprofiles []*GameProfile
+
+	orgModules := []OrgModule{
+		{OrgId: 5, ModuleId: 4, FleetName: "simple-game-server", Namespace: "default"},
+		{OrgId: 2, ModuleId: 3, FleetName: "pixo-game-server", Namespace: "default"},
+	}
+
 	var pools []*pb.Pool
+
 	for _, orgModule := range orgModules {
 		pools = []*pb.Pool{}
 		pools = append(pools, &pb.Pool{
@@ -36,11 +47,16 @@ func generateProfiles() []*pb.MatchProfile {
 			},
 		})
 
-		profiles = append(profiles, &pb.MatchProfile{
-			Name:       "profile_" + strconv.Itoa(orgModule.OrgId) + "_" + strconv.Itoa(orgModule.ModuleId),
-			Pools:      pools,
-			Extensions: map[string]*anypb.Any{},
-		})
+		c := &GameProfile{
+			profile: pb.MatchProfile{
+				Name:       "profile_" + strconv.Itoa(orgModule.OrgId) + "_" + strconv.Itoa(orgModule.ModuleId),
+				Pools:      pools,
+				Extensions: map[string]*anypb.Any{},
+			},
+			org: orgModule,
+		}
+
+		gameprofiles = append(gameprofiles, c)
 	}
-	return profiles
+	return gameprofiles
 }
