@@ -7,11 +7,11 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/anypb"
 	"open-match.dev/open-match/pkg/pb"
 
 	agonesv1 "agones.dev/agones/pkg/apis/agones/v1"
@@ -122,7 +122,7 @@ func createAgonesGameServerAllocation() *allocationv1.GameServerAllocation {
 }
 
 // Customize the backend.FetchMatches request, the default one will return all tickets in the statestore
-func createOMFetchMatchesRequest() *pb.FetchMatchesRequest {
+func createOMFetchMatchesRequest(p *pb.MatchProfile) *pb.FetchMatchesRequest {
 	return &pb.FetchMatchesRequest{
 		// om-function:50502 -> the internal hostname & port number of the MMF service in our Kubernetes cluster
 		Config: &pb.FunctionConfig{
@@ -130,15 +130,7 @@ func createOMFetchMatchesRequest() *pb.FetchMatchesRequest {
 			Port: MMF_API_PORT,
 			Type: pb.FunctionConfig_GRPC,
 		},
-		Profile: &pb.MatchProfile{
-			Name: "get-all",
-			Pools: []*pb.Pool{
-				{
-					Name: "everyone",
-				},
-			},
-			Extensions: map[string]*anypb.Any{},
-		},
+		Profile: p,
 	}
 }
 
@@ -194,9 +186,9 @@ func createOMAssignTicketRequest(match *pb.Match, address string, port int32) *p
 	}
 }
 
-func fetch(bc pb.BackendServiceClient) ([]*pb.Match, error) {
+func fetch(bc pb.BackendServiceClient, p *pb.MatchProfile) ([]*pb.Match, error) {
 	// this needs to be modified to fetch the correct profile
-	stream, err := bc.FetchMatches(context.Background(), createOMFetchMatchesRequest())
+	stream, err := bc.FetchMatches(context.Background(), createOMFetchMatchesRequest(p))
 	if err != nil {
 		return nil, err
 	}
@@ -221,16 +213,11 @@ func fetch(bc pb.BackendServiceClient) ([]*pb.Match, error) {
 func allocate() (*GameServerIPPort, error) {
 	ctx := context.Background()
 
-	// Log the values used in the allocation
-	// logger.WithField("namespace", namespace).Info("namespace for GameServerAllocation")
-	// logger.WithField("fleetname", fleetname).Info("fleetname for GameServerAllocation")
-
 	// Find out how many ready replicas the fleet has - we need at least one
 	gsa, err := agonesClient.AllocationV1().GameServerAllocations(namespace).Create(ctx,
 		createAgonesGameServerAllocation(), metav1.CreateOptions{})
 	if err != nil {
-		logger.WithError(err).Info("failed to allocate game server.")
-		return nil, errors.New("failed to create allocation")
+		return nil, err
 	}
 
 	if gsa.Status.State != allocationv1.GameServerAllocationAllocated {
@@ -238,7 +225,7 @@ func allocate() (*GameServerIPPort, error) {
 	}
 
 	// Log the GameServer.Staus of the new allocation, then return those values
-	logger.Info("New GameServer allocated: ", gsa.Status.State)
+	logger.Infof("New GameServer allocated: %v", gsa.Status.State)
 
 	address, port := gsa.Status.Address, gsa.Status.Ports[0].Port
 
@@ -256,7 +243,7 @@ func assign(bc pb.BackendServiceClient, matches []*pb.Match, gameSrvInfo *GameSe
 		}
 
 		conn := fmt.Sprintf("%s:%d", gameSrvInfo.address, gameSrvInfo.port)
-		logger.Info("Assigned server %v to match %v", conn, match.GetMatchId())
+		logger.Infof("Assigned server %s to match %s", conn, match.GetMatchId())
 	}
 
 	return nil
@@ -268,36 +255,49 @@ func Run() {
 	defer omCloser()
 
 	rand.Seed(time.Now().Unix())
+	// Generate the profiles to fetch matches for.
+	profiles := generateProfiles()
 
 	for range time.Tick(time.Second * 2) {
-		matches, err := fetch(bc)
-		if err != nil {
-			logger.WithError(err).Info("Failed to fetch matches")
-			continue
-		}
-		// if not matches then continue
-		if len(matches) > 0 {
-			readyReplicas := checkReadyReplicas()
+		// Fetch matches for each profile and make random assignments for Tickets in
+		// the matches returned.
+		var wg sync.WaitGroup
+		for _, p := range profiles {
+			wg.Add(1)
+			go func(wg *sync.WaitGroup, p *pb.MatchProfile) {
+				defer wg.Done()
 
-			// Log and return an error if there are no ready replicas
-			if readyReplicas < 1 {
-				g, err := getAllocatedGameServerInfo()
+				matches, err := fetch(bc, p)
 				if err != nil {
-					logger.WithError(err).Error("Failed to get game server info")
-					continue
+					logger.WithError(err).Info("Failed to fetch matches")
+					return
 				}
-				err = assign(bc, matches, g)
-				if err != nil {
-					logger.WithError(err).Error("Failed to assign servers to matches")
+				// if not matches then continue
+				if len(matches) > 0 {
+					readyReplicas := checkReadyReplicas()
+
+					// Log and return an error if there are no ready replicas
+					if readyReplicas < 1 {
+						g, err := getAllocatedGameServerInfo()
+						if err != nil {
+							logger.WithError(err).Error("Failed to get game server info")
+							return
+						}
+						err = assign(bc, matches, g)
+						if err != nil {
+							logger.WithError(err).Error("Failed to assign servers to matches")
+						}
+					} else {
+						// allocate the server
+						allocatedata, err := allocate()
+						if err != nil {
+							logger.WithError(err).Info("Failed to assign servers to matches")
+						}
+						assign(bc, matches, allocatedata)
+					}
 				}
-			} else {
-				// allocate the server
-				allocatedata, err := allocate()
-				if err != nil {
-					logger.WithError(err).Printf("Failed to assign servers to matches, got %s", err.Error())
-				}
-				assign(bc, matches, allocatedata)
-			}
+			}(&wg, p)
 		}
+		wg.Wait()
 	}
 }
