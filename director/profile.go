@@ -49,7 +49,7 @@ func generateGameProfile() []*GameProfile {
 
 		c := &GameProfile{
 			profile: pb.MatchProfile{
-				Name:       "profile_" + strconv.Itoa(orgModule.OrgId) + "_" + strconv.Itoa(orgModule.ModuleId),
+				Name:       "O_" + strconv.Itoa(orgModule.OrgId) + "_M_" + strconv.Itoa(orgModule.ModuleId),
 				Pools:      pools,
 				Extensions: map[string]*anypb.Any{},
 			},
