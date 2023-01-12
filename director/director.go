@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"time"
 
@@ -19,7 +20,6 @@ import (
 	v1 "agones.dev/agones/pkg/client/informers/externalversions/agones/v1"
 	"agones.dev/agones/pkg/util/runtime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -143,31 +143,16 @@ type GameServerIPPort struct {
 
 // Get IP Address of an allocated game server
 func getAllocatedGameServerInfo() (*GameServerIPPort, error) {
-	informer, err := getGameServerInfomer()
+	listGameServer, err := agonesClient.AgonesV1().GameServers(namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
-		logger.WithError(err).Error("Failed to get the informer")
 		return nil, err
 	}
-	gslister := informer.gameInformer.Lister()
-	// Get List objects of Pods from Pod Lister
-	// Get List objects of GameServers from GameServer Lister
-	gs, err := gslister.List(labels.Everything())
-	if err != nil {
-		logger.WithError(err).Error("Failed to list games servers")
-		return nil, err
-	}
-	var ipaddress string
-	var port int32
-	for _, g := range gs {
-		// logger.Infof("Status: %s", g.Status.State)
-		if g.Status.State == agonesv1.GameServerStateAllocated {
-			ipaddress = g.Status.Address
-			port = g.Status.Ports[0].Port
-		}
-	}
+	n := rand.Intn(len(listGameServer.Items))
+	gameserver := listGameServer.Items[n].Status
+
 	c := &GameServerIPPort{
-		address: ipaddress,
-		port:    port,
+		address: gameserver.Address,
+		port:    gameserver.Ports[0].Port,
 	}
 	return c, nil
 }
@@ -277,7 +262,9 @@ func Run() {
 	bc, omCloser := createOMBackendClient()
 	defer omCloser()
 
-	for range time.Tick(time.Second * 1) {
+	rand.Seed(time.Now().Unix())
+
+	for {
 		matches, err := fetch(bc)
 		if err != nil {
 			logger.WithError(err).Info("Failed to fetch matches")
@@ -287,7 +274,6 @@ func Run() {
 		if len(matches) <= 0 {
 			continue
 		}
-
 		readyReplicas := checkReadyReplicas()
 
 		// Log and return an error if there are no ready replicas
@@ -306,10 +292,10 @@ func Run() {
 			allocatedata, err := allocate()
 			if err != nil {
 				logger.WithError(err).Printf("Failed to assign servers to matches, got %s", err.Error())
-				// return err
 			}
 			assign(bc, matches, allocatedata)
 		}
 
+		time.Sleep(time.Second * 5)
 	}
 }
