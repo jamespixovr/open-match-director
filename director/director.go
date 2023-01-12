@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/anypb"
 	"open-match.dev/open-match/pkg/pb"
 
 	agonesv1 "agones.dev/agones/pkg/apis/agones/v1"
@@ -130,8 +131,13 @@ func createOMFetchMatchesRequest() *pb.FetchMatchesRequest {
 			Type: pb.FunctionConfig_GRPC,
 		},
 		Profile: &pb.MatchProfile{
-			Name:  "get-all",
-			Pools: []*pb.Pool{},
+			Name: "get-all",
+			Pools: []*pb.Pool{
+				{
+					Name: "everyone",
+				},
+			},
+			Extensions: map[string]*anypb.Any{},
 		},
 	}
 }
@@ -192,7 +198,6 @@ func fetch(bc pb.BackendServiceClient) ([]*pb.Match, error) {
 	// this needs to be modified to fetch the correct profile
 	stream, err := bc.FetchMatches(context.Background(), createOMFetchMatchesRequest())
 	if err != nil {
-		logger.Errorf("fail to get response stream from backend.FetchMatches call: %w", err)
 		return nil, err
 	}
 	var result []*pb.Match
@@ -264,38 +269,35 @@ func Run() {
 
 	rand.Seed(time.Now().Unix())
 
-	for {
+	for range time.Tick(time.Second * 2) {
 		matches, err := fetch(bc)
 		if err != nil {
 			logger.WithError(err).Info("Failed to fetch matches")
 			continue
 		}
 		// if not matches then continue
-		if len(matches) <= 0 {
-			continue
-		}
-		readyReplicas := checkReadyReplicas()
+		if len(matches) > 0 {
+			readyReplicas := checkReadyReplicas()
 
-		// Log and return an error if there are no ready replicas
-		if readyReplicas < 1 {
-			g, err := getAllocatedGameServerInfo()
-			if err != nil {
-				logger.WithError(err).Error("Failed to get game server info")
-				continue
+			// Log and return an error if there are no ready replicas
+			if readyReplicas < 1 {
+				g, err := getAllocatedGameServerInfo()
+				if err != nil {
+					logger.WithError(err).Error("Failed to get game server info")
+					continue
+				}
+				err = assign(bc, matches, g)
+				if err != nil {
+					logger.WithError(err).Error("Failed to assign servers to matches")
+				}
+			} else {
+				// allocate the server
+				allocatedata, err := allocate()
+				if err != nil {
+					logger.WithError(err).Printf("Failed to assign servers to matches, got %s", err.Error())
+				}
+				assign(bc, matches, allocatedata)
 			}
-			err = assign(bc, matches, g)
-			if err != nil {
-				logger.WithError(err).Error("Failed to assign servers to matches")
-			}
-		} else {
-			// allocate the server
-			allocatedata, err := allocate()
-			if err != nil {
-				logger.WithError(err).Printf("Failed to assign servers to matches, got %s", err.Error())
-			}
-			assign(bc, matches, allocatedata)
 		}
-
-		time.Sleep(time.Second * 5)
 	}
 }
