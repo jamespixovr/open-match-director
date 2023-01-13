@@ -155,19 +155,19 @@ func getAllocatedGameServerInfo(org OrgModule) (*GameServerIPPort, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	filteredGS := Filter(listGameServer.Items, func(word agonesv1.GameServer) bool {
 		return strings.Contains(word.GetName(), org.FleetName)
 	})
 
-	// listGameServer = Filter(listGameServer.Items, func(gs agonesv1.GameServer) bool {
-	// 	return strings.Contains(gs.GetName(), org.FleetName)
-	// })
-	n := rand.Intn(len(filteredGS)) // filter the array
-	gameserver := listGameServer.Items[n].Status
+	n := rand.Intn(len(filteredGS))
+	gameServerStatus := filteredGS[n].Status
+	// get the players
+	// gameserver.Players.Count
 
 	c := &GameServerIPPort{
-		address: gameserver.Address,
-		port:    gameserver.Ports[0].Port,
+		address: gameServerStatus.Address,
+		port:    gameServerStatus.Ports[0].Port,
 	}
 	return c, nil
 }
